@@ -1,289 +1,444 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
+import { useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
+import { useRouter } from "next/navigation";
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+type Candidate = {
+  pdf_path: string;
+  name: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  email?: string | null;
+  current_position?: string | null;
+  ranking_score?: number | null;
+  recruiter_ranking?: string | null;
+  strengths?: string | null;
+  weaknesses?: string | null;
+  analyzed_at?: string | null;
+};
 
-export default function Home() {
-  const [file, setFile] = useState<File | null>(null);
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+export default function DashboardPage() {
+  const [mounted, setMounted] = useState(false);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [analyzing, setAnalyzing] = useState<string | null>(null);
+  const [analyzingAll, setAnalyzingAll] = useState(false);
+  const [archiving, setArchiving] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [honeypot, setHoneypot] = useState("");
+  const [sortBy, setSortBy] = useState<"ranking" | "name">("ranking");
+  const [instructions, setInstructions] = useState("");
+  const [instructionsDirty, setInstructionsDirty] = useState(false);
+  const [savingInstructions, setSavingInstructions] = useState(false);
+  const router = useRouter();
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const fetchCandidates = async () => {
+    setLoading(true);
     setError(null);
-
-    if (!selectedFile) {
-      setFile(null);
-      return;
-    }
-
-    if (selectedFile.type !== "application/pdf") {
-      setError("Please upload a PDF file only.");
-      setFile(null);
-      return;
-    }
-
-    if (selectedFile.size > MAX_FILE_SIZE) {
-      setError("File size must not exceed 10 MB.");
-      setFile(null);
-      return;
-    }
-
-    setFile(selectedFile);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!firstName.trim()) {
-      setError("Please enter your first name.");
-      return;
-    }
-    if (!lastName.trim()) {
-      setError("Please enter your last name.");
-      return;
-    }
-    if (firstName.length > 100 || lastName.length > 100) {
-      setError("First name and last name must not exceed 100 characters each.");
-      return;
-    }
-    if (!file) {
-      setError("Please select a PDF file to upload.");
-      return;
-    }
-
-    // Honeypot: if filled, it's a bot - silently succeed
-    if (honeypot) {
-      window.location.href = "/success";
-      return;
-    }
-
-    setIsSubmitting(true);
-    setError(null);
-
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("firstName", firstName.trim());
-      formData.append("lastName", lastName.trim());
-
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Upload failed");
+      const res = await fetch("/api/candidates");
+      if (!res.ok) {
+        if (res.status === 401) {
+          router.push("/login");
+          return;
+        }
+        throw new Error("Failed to load candidates");
       }
-
-      window.location.href = "/success";
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed. Please try again.");
+      const data = await res.json();
+      setCandidates(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error loading");
     } finally {
-      setIsSubmitting(false);
+      setLoading(false);
     }
   };
+
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch("/api/settings");
+      if (res.ok) {
+        const { prompt } = await res.json();
+        setInstructions(prompt);
+      }
+    } catch {
+      // use default
+    }
+  };
+
+  useEffect(() => {
+    fetchCandidates();
+    fetchSettings();
+  }, []);
+
+  const handleSaveInstructions = async () => {
+    setSavingInstructions(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: instructions }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      setInstructionsDirty(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSavingInstructions(false);
+    }
+  };
+
+  const handleArchive = async (pdfPath: string) => {
+    setArchiving(pdfPath);
+    setError(null);
+    try {
+      const res = await fetch("/api/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf_path: pdfPath }),
+      });
+      if (!res.ok) throw new Error("Archive failed");
+      await fetchCandidates();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Archive failed");
+    } finally {
+      setArchiving(null);
+    }
+  };
+
+  const handleDelete = async (pdfPath: string) => {
+    if (!confirm("Bewerbung endgültig löschen? Die PDF wird unwiderruflich entfernt.")) return;
+    setDeleting(pdfPath);
+    setError(null);
+    try {
+      const res = await fetch("/api/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf_path: pdfPath }),
+      });
+      if (!res.ok) throw new Error("Delete failed");
+      await fetchCandidates();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const handleAnalyze = async (pdfPath: string) => {
+    setAnalyzing(pdfPath);
+    setError(null);
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf_path: pdfPath }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Analysis failed");
+      }
+      await fetchCandidates();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Analysis failed");
+    } finally {
+      setAnalyzing(null);
+    }
+  };
+
+  const handleAnalyzeAll = async () => {
+    if (
+      !confirm(
+        "Are you sure? This will run AI analysis on all candidates. This may take several minutes and use OpenAI credits."
+      )
+    ) {
+      return;
+    }
+    setAnalyzingAll(true);
+    setError(null);
+    let failed = 0;
+    try {
+      for (const c of candidates) {
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pdf_path: c.pdf_path }),
+        });
+        if (!res.ok) failed++;
+      }
+      await fetchCandidates();
+      if (failed > 0) {
+        setError(`${failed} of ${candidates.length} analyses failed.`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Analyze all failed");
+    } finally {
+      setAnalyzingAll(false);
+    }
+  };
+
+  const handleRecruiterRankingChange = async (pdfPath: string, value: string | null) => {
+    try {
+      const res = await fetch("/api/recruiter-ranking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf_path: pdfPath, recruiter_ranking: value }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      setCandidates((prev) =>
+        prev.map((c) =>
+          c.pdf_path === pdfPath ? { ...c, recruiter_ranking: value } : c
+        )
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save ranking");
+    }
+  };
+
+  const handleViewPdf = (pdfPath: string) => {
+    const url = `/api/pdf?path=${encodeURIComponent(pdfPath)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  const handleSignOut = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  };
+
+  const sorted = [...candidates].sort((a, b) => {
+    if (sortBy === "ranking") {
+      return (b.ranking_score ?? 0) - (a.ranking_score ?? 0);
+    }
+    return (a.name || "").localeCompare(b.name || "");
+  });
+
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <p className="text-gray-500">Loading…</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-white">
-      {/* UniBe Header */}
-      <header className="bg-[var(--unibe-red)] text-white py-6 px-6">
-        <div className="max-w-3xl mx-auto">
-          <Link
-            href="https://www.unibe.ch/index_eng.html"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm opacity-90 hover:opacity-100 transition-opacity"
-          >
-            University of Bern
-          </Link>
-          <p className="text-sm mt-1 opacity-80">
-            Institute of Plant Sciences · Research Section Biotic Interactions
-          </p>
+    <div className="min-h-screen bg-gray-50">
+      <header className="bg-[var(--unibe-red)] text-white py-4 px-6 flex justify-between items-center">
+        <div>
+          <h1 className="text-lg font-semibold">Recruitment Admin</h1>
+          <p className="text-sm opacity-90">Post Doc Plant Volatile Interactions</p>
         </div>
+        <button
+          onClick={handleSignOut}
+          className="text-sm px-4 py-2 rounded bg-white/20 hover:bg-white/30"
+        >
+          Sign out
+        </button>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-12">
-        <h1 className="text-2xl font-semibold text-[var(--unibe-red)] mb-2">
-          Post Doc in Plant Volatile Interactions (100%)
-        </h1>
-        <p className="text-sm text-gray-600 mb-8">
-          Prof. Matthias Erb · University of Bern, Switzerland
-        </p>
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg text-sm">
+            {error}
+          </div>
+        )}
 
-        <div className="prose prose-gray max-w-none mb-12">
-          <p className="text-gray-700 leading-relaxed mb-6">
-            The Research Section Biotic Interactions (Prof. Matthias Erb), University of Bern,
-            Switzerland, is inviting applications for a Post Doc in Plant Volatile Interactions (100%).
-          </p>
-
-          <p className="text-gray-700 leading-relaxed mb-6">
-            Our laboratory studies how small molecules govern plant-environment interactions. We use
-            an interdisciplinary approach that builds on a mechanistic understanding and manipulation
-            of small molecule biosynthesis and perception to quantify biological and ecological effects.
-          </p>
-
-          <p className="text-gray-700 leading-relaxed mb-6">
-            To strengthen our research group, we are looking for a post doc interested in deciphering
-            the role of plant volatiles in plant-plant interactions. Over the last years, we have built
-            a globally unique mutant panel and new methods to measure volatile dynamics between plants
-            and have made significant progress in understanding how plants perceive volatiles. Thus,
-            this is a great moment to push the frontiers of knowledge and generate new insights into
-            this fascinating phenomenon.
-          </p>
-
-          <h2 className="text-lg font-semibold text-[var(--unibe-red)] mt-8 mb-4">
-            What we expect
+        <section className="mb-8 p-4 bg-white rounded-lg shadow border border-gray-200">
+          <h2 className="text-sm font-semibold text-gray-700 mb-2">
+            ChatGPT-Anweisungen für die Analyse
           </h2>
-          <ul className="list-disc pl-6 text-gray-700 space-y-2 mb-6">
-            <li>
-              PhD in a relevant field (planned or completed), including significant contributions to
-              scientific enterprise, including for instance publications of high quality and originality.
-            </li>
-            <li>
-              Experience in chemical ecology, analytical chemistry, molecular biology, biochemistry,
-              or plant genetics.
-            </li>
-            <li>
-              An interest in performing interdisciplinary research from genes to agroecosystems is crucial.
-            </li>
-            <li>Good writing and communication skills are essential.</li>
-            <li>Willingness to pursue a long-term academic career.</li>
-          </ul>
-
-          <h2 className="text-lg font-semibold text-[var(--unibe-red)] mt-8 mb-4">
-            What we offer
-          </h2>
-          <ul className="list-disc pl-6 text-gray-700 space-y-2 mb-6">
-            <li>A unique opportunity to push the boundaries of knowledge in a dynamic research team.</li>
-            <li>Active, personalized mentoring towards an independent scientific career.</li>
-            <li>Attractive remuneration according to Swiss salary rates.</li>
-            <li>
-              The project will be tailored to the skills and needs of the applicant in order to maximize
-              their training, scientific and personal development.
-            </li>
-          </ul>
-
-          <h2 className="text-lg font-semibold text-[var(--unibe-red)] mt-8 mb-4">
-            How to apply
-          </h2>
-          <p className="text-gray-700 mb-6">
-            Upload your CV, a brief letter of motivation explaining your reason to apply, your three most
-            noteworthy achievements and contact details of two academic references as a single PDF
-            (max. 10 MB). The position is open until filled. Earliest starting date is 1. September 2026.
-          </p>
-
-          <p className="text-sm text-gray-600">
-            <strong>More Information:</strong>{" "}
-            <a
-              href="https://www.ips.unibe.ch/research/interactions/index_eng.html"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[var(--unibe-red)] hover:underline"
-            >
-              https://www.ips.unibe.ch/research/interactions/index_eng.html
-            </a>
-          </p>
-        </div>
-
-        {/* Application Form */}
-        <section className="border-t border-gray-200 pt-12">
-          <h2 className="text-xl font-semibold text-[var(--unibe-red)] mb-6">
-            Submit your application
-          </h2>
-
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Honeypot - hidden from users, bots will fill it */}
-            <div className="absolute -left-[9999px]" aria-hidden="true">
-              <label htmlFor="website">Website</label>
-              <input
-                type="text"
-                id="website"
-                name="website"
-                tabIndex={-1}
-                autoComplete="off"
-                value={honeypot}
-                onChange={(e) => setHoneypot(e.target.value)}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label
-                  htmlFor="first-name"
-                  className="block text-sm font-medium text-gray-700 mb-2"
-                >
-                  First Name
-                </label>
-                <input
-                  id="first-name"
-                  type="text"
-                  required
-                  maxLength={100}
-                  value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
-                  className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-[var(--unibe-red)] focus:outline-none focus:ring-1 focus:ring-[var(--unibe-red)]"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="last-name"
-                  className="block text-sm font-medium text-gray-700 mb-2"
-                >
-                  Last Name
-                </label>
-                <input
-                  id="last-name"
-                  type="text"
-                  required
-                  maxLength={100}
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  className="block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:border-[var(--unibe-red)] focus:outline-none focus:ring-1 focus:ring-[var(--unibe-red)]"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label
-                htmlFor="pdf-upload"
-                className="block text-sm font-medium text-gray-700 mb-2"
-              >
-                Upload your application (PDF, max. 10 MB)
-              </label>
-              <input
-                id="pdf-upload"
-                type="file"
-                accept=".pdf,application/pdf"
-                onChange={handleFileChange}
-                className="block w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-medium file:bg-[var(--unibe-red)] file:text-white hover:file:bg-[var(--unibe-red-dark)] file:cursor-pointer"
-              />
-              {file && (
-                <p className="mt-2 text-sm text-gray-600">
-                  Selected: {file.name} ({(file.size / 1024).toFixed(1)} KB)
-                </p>
-              )}
-            </div>
-
-            {error && (
-              <div className="rounded-md bg-red-50 p-4 text-sm text-red-700">{error}</div>
-            )}
-
+          <textarea
+            value={instructions}
+            onChange={(e) => {
+              setInstructions(e.target.value);
+              setInstructionsDirty(true);
+            }}
+            rows={10}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
+            placeholder="Anweisungen für die KI..."
+          />
+          <div className="mt-2 flex justify-end">
             <button
-              type="submit"
-              disabled={!firstName.trim() || !lastName.trim() || !file || isSubmitting}
-              className="w-full sm:w-auto px-8 py-3 bg-[var(--unibe-red)] text-white font-medium rounded hover:bg-[var(--unibe-red-dark)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              onClick={handleSaveInstructions}
+              disabled={!instructionsDirty || savingInstructions}
+              className="px-4 py-2 text-sm font-medium rounded bg-[var(--unibe-red)] text-white hover:bg-[var(--unibe-red-dark)] disabled:opacity-50"
             >
-              {isSubmitting ? "Uploading…" : "Submit application"}
+              {savingInstructions ? "Speichern…" : "Speichern"}
             </button>
-          </form>
+          </div>
         </section>
+
+        {loading ? (
+          <p className="text-gray-500">Loading candidates…</p>
+        ) : (
+          <>
+            <div className="mb-4 flex justify-between items-center flex-wrap gap-2">
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-gray-600">
+                  {candidates.length} application{candidates.length !== 1 ? "s" : ""}
+                </span>
+                <button
+                  onClick={handleAnalyzeAll}
+                  disabled={candidates.length === 0 || analyzingAll || !!analyzing}
+                  className="px-4 py-2 text-sm font-medium rounded bg-[var(--unibe-red)] text-white hover:bg-[var(--unibe-red-dark)] disabled:opacity-50"
+                >
+                  {analyzingAll ? "Analyzing…" : "Analyze all"}
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSortBy("ranking")}
+                  className={`px-3 py-1 text-sm rounded ${sortBy === "ranking" ? "bg-[var(--unibe-red)] text-white" : "bg-gray-200 text-gray-700"}`}
+                >
+                  Sort by ranking
+                </button>
+                <button
+                  onClick={() => setSortBy("name")}
+                  className={`px-3 py-1 text-sm rounded ${sortBy === "name" ? "bg-[var(--unibe-red)] text-white" : "bg-gray-200 text-gray-700"}`}
+                >
+                  Sort by name
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto bg-white rounded-lg shadow border border-gray-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50">
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Name</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Current position</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Ranking AI</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Ranking Recruiter</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Details</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">PDF</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Email</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Analyze</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Archiv / Löschen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map((c) => (
+                    <tr key={c.pdf_path} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="py-3 px-4 font-medium">{c.name || "—"}</td>
+                      <td className="py-3 px-4 text-gray-600">{c.current_position || "—"}</td>
+                      <td className="py-3 px-4">
+                        {c.ranking_score != null ? (
+                          <span
+                            className={`inline-flex items-center justify-center w-10 h-10 rounded-full font-semibold ${
+                              c.ranking_score >= 80
+                                ? "bg-green-100 text-green-800"
+                                : c.ranking_score >= 60
+                                  ? "bg-yellow-100 text-yellow-800"
+                                  : "bg-gray-100 text-gray-700"
+                            }`}
+                          >
+                            {c.ranking_score}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        <select
+                          value={c.recruiter_ranking ?? ""}
+                          onChange={(e) =>
+                            handleRecruiterRankingChange(
+                              c.pdf_path,
+                              e.target.value || null
+                            )
+                          }
+                          className="rounded border border-gray-300 px-2 py-1 text-sm"
+                        >
+                          <option value="">—</option>
+                          <option value="A">A</option>
+                          <option value="B">B</option>
+                          <option value="C">C</option>
+                        </select>
+                      </td>
+                      <td className="py-3 px-4 max-w-xs">
+                        {c.strengths || c.weaknesses ? (
+                          <div className="space-y-1 text-xs">
+                            {c.strengths && (
+                              <div>
+                                <span className="font-medium text-green-700">Strengths:</span>{" "}
+                                {c.strengths}
+                              </div>
+                            )}
+                            {c.weaknesses && (
+                              <div>
+                                <span className="font-medium text-amber-700">Weaknesses:</span>{" "}
+                                {c.weaknesses}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        <button
+                          onClick={() => handleViewPdf(c.pdf_path)}
+                          className="text-[var(--unibe-red)] hover:underline font-medium"
+                        >
+                          View PDF
+                        </button>
+                      </td>
+                      <td className="py-3 px-4">
+                        {c.email ? (
+                          <a
+                            href={`mailto:${c.email}`}
+                            className="text-[var(--unibe-red)] hover:underline"
+                          >
+                            {c.email}
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        <button
+                          onClick={() => handleAnalyze(c.pdf_path)}
+                          disabled={!!analyzing}
+                          className="px-3 py-1 text-xs font-medium rounded bg-[var(--unibe-red)] text-white hover:bg-[var(--unibe-red-dark)] disabled:opacity-50"
+                        >
+                          {analyzing === c.pdf_path ? "Analyzing…" : c.ranking_score != null ? "Re-analyze" : "Analyze"}
+                        </button>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleArchive(c.pdf_path)}
+                            disabled={!!archiving || !!deleting}
+                            className="px-3 py-1 text-xs font-medium rounded bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+                          >
+                            {archiving === c.pdf_path ? "…" : "Archivieren"}
+                          </button>
+                          <button
+                            onClick={() => handleDelete(c.pdf_path)}
+                            disabled={!!archiving || !!deleting}
+                            className="px-3 py-1 text-xs font-medium rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50"
+                          >
+                            {deleting === c.pdf_path ? "…" : "Löschen"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {candidates.length === 0 && (
+              <p className="text-center text-gray-500 py-12">No applications yet.</p>
+            )}
+          </>
+        )}
       </main>
     </div>
   );

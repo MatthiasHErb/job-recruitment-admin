@@ -1,51 +1,45 @@
-# Job Application – Post Doc Plant Volatile Interactions
+# Recruitment Admin
 
-Bewerbungsseite für die Stelle «Post Doc in Plant Volatile Interactions» an der Research Section Biotic Interactions (Prof. Matthias Erb), Universität Bern.
+Admin-Dashboard für die Bewertung von Post-Doc-Bewerbungen (Plant Volatile Interactions). Nutzt dieselbe Supabase-Instanz wie die Job-Application-Site.
 
 ## Features
 
-- Jobausschreibung im UniBe-Design
-- PDF-Upload (max. 10 MB)
-- Supabase Storage für Dateien
-- Spam-Schutz: Rate Limiting (3/IP/Stunde), Honeypot
-- Bestätigungsseite nach erfolgreicher Bewerbung
+- **Authentifizierung** – Nur eingeloggte Nutzer haben Zugriff
+- **PDF-Liste** – Alle Bewerbungen aus dem Storage
+- **AI-Analyse** – OpenAI analysiert CVs (Name, Position, E-Mail, Stärken, Schwächen, Ranking)
+- **Tabelle** – Sortierbar nach Ranking oder Name
+- **PDF-Link** – Signierte URLs zum Anschauen
+- **E-Mail** – Direktlink für Kontaktaufnahme
 
 ## Setup
 
-### 1. Abhängigkeiten installieren
+### 1. Supabase (gleiches Projekt wie job-application-erb)
+
+1. **Tabellen anlegen** – `supabase/candidates.sql` im SQL Editor ausführen (enthält recruitment_candidates, recruitment_settings, archived_applications)
+2. **Nutzer anlegen** – In Supabase Auth einen Admin-Account erstellen (Email + Passwort)
+
+### 2. Umgebungsvariablen
+
+`.env.local`:
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+OPENAI_API_KEY=sk-...
+```
+
+### 3. Lokal starten
 
 ```bash
 npm install
-```
-
-### 2. Supabase konfigurieren
-
-Siehe [SUPABASE_SETUP.md](./SUPABASE_SETUP.md) für die Anleitung.
-
-### 3. Umgebungsvariablen
-
-Kopiere `.env.example` zu `.env.local` und trage die Supabase-Credentials ein.
-
-### 4. Lokal starten
-
-```bash
 npm run dev
 ```
 
-Öffne [http://localhost:3000](http://localhost:3000).
+→ http://localhost:3001
 
 ## Deployment (Vercel)
 
-1. Repository auf GitHub pushen
-2. [Vercel](https://vercel.com) → New Project → GitHub-Repo verbinden
-3. Environment Variables setzen:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-4. Deploy
-
-## Technologie
-
-- Next.js 16 (App Router)
-- TypeScript
-- Tailwind CSS
-- Supabase Storage
+1. Neues Projekt mit diesem Repo verbinden
+2. Environment Variables setzen (siehe oben)
+3. Deploy

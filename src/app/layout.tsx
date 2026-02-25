@@ -13,9 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Post Doc in Plant Volatile Interactions | University of Bern",
-  description:
-    "The Research Section Biotic Interactions (Prof. Matthias Erb), University of Bern, is inviting applications for a Post Doc in Plant Volatile Interactions (100%).",
+  title: "Recruitment Admin | Plant Volatile Post Doc",
+  description: "Candidate management for Post Doc applications",
 };
 
 export default function RootLayout({
