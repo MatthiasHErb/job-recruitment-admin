@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
+import * as XLSX from "xlsx";
 
 type Candidate = {
   pdf_path: string;
@@ -16,6 +17,7 @@ type Candidate = {
   strengths?: string | null;
   weaknesses?: string | null;
   analyzed_at?: string | null;
+  rejected?: boolean;
 };
 
 export default function DashboardPage() {
@@ -24,13 +26,16 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [analyzingAll, setAnalyzingAll] = useState(false);
+  const [analyzingNew, setAnalyzingNew] = useState(false);
   const [archiving, setArchiving] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<"ranking" | "name">("ranking");
   const [instructions, setInstructions] = useState("");
   const [instructionsDirty, setInstructionsDirty] = useState(false);
   const [savingInstructions, setSavingInstructions] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -182,6 +187,41 @@ export default function DashboardPage() {
     }
   };
 
+  const handleAnalyzeNew = async () => {
+    const newCandidates = candidates.filter((c) => !c.analyzed_at);
+    if (newCandidates.length === 0) return;
+
+    if (
+      !confirm(
+        `Are you sure? This will run AI analysis on ${newCandidates.length} new candidate${newCandidates.length !== 1 ? "s" : ""}. This may take several minutes and use OpenAI credits.`
+      )
+    ) {
+      return;
+    }
+
+    setAnalyzingNew(true);
+    setError(null);
+    let failed = 0;
+    try {
+      for (const c of newCandidates) {
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pdf_path: c.pdf_path }),
+        });
+        if (!res.ok) failed++;
+      }
+      await fetchCandidates();
+      if (failed > 0) {
+        setError(`${failed} of ${newCandidates.length} analyses failed.`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Analyze new failed");
+    } finally {
+      setAnalyzingNew(false);
+    }
+  };
+
   const handleRecruiterRankingChange = async (pdfPath: string, value: string | null) => {
     try {
       const res = await fetch("/api/recruiter-ranking", {
@@ -205,12 +245,98 @@ export default function DashboardPage() {
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
+  const handleDownloadXlsx = () => {
+    if (sorted.length === 0) return;
+
+    setDownloading(true);
+    setError(null);
+    try {
+      const headers = [
+        "Name",
+        "Current position",
+        "Ranking AI",
+        "Ranking Recruiter",
+        "Details",
+        "PDF",
+        "Email",
+      ];
+
+      const rows = sorted.map((c) => ({
+        Name: c.name || "—",
+        "Current position": c.current_position || "—",
+        "Ranking AI": c.ranking_score ?? "—",
+        "Ranking Recruiter": c.recruiter_ranking ?? "—",
+        Details:
+          c.strengths || c.weaknesses
+            ? [
+                c.strengths ? `Strengths: ${c.strengths}` : null,
+                c.weaknesses ? `Weaknesses: ${c.weaknesses}` : null,
+              ]
+                .filter(Boolean)
+                .join(" | ")
+            : "—",
+        PDF: c.pdf_path || "—",
+        Email: c.email || "—",
+      }));
+
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Applicants");
+
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(workbook, `applicants-${dateStamp}.xlsx`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const handleRejectEmail = async (candidate: Candidate) => {
+    if (!candidate.email) {
+      setError("No email address available for this candidate.");
+      return;
+    }
+
+    setRejecting(candidate.pdf_path);
+    setError(null);
+
+    const firstName = candidate.first_name?.trim() || "Applicant";
+    const body = `Dear ${firstName}.\n\nThank you very much for your application. Unfortunately, we cannot currently offer you the position. Nevertheless, we wish you all the best for your future career.\n\nBest wishes,\nMatthias`;
+    const subject = "Your application";
+    const mailto = `mailto:${encodeURIComponent(candidate.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+    window.location.href = mailto;
+
+    try {
+      const res = await fetch("/api/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf_path: candidate.pdf_path, rejected: true }),
+      });
+
+      if (!res.ok) throw new Error("Failed to set rejected status");
+
+      setCandidates((prev) =>
+        prev.map((c) =>
+          c.pdf_path === candidate.pdf_path ? { ...c, rejected: true } : c
+        )
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to set rejected status");
+    } finally {
+      setRejecting(null);
+    }
+  };
+
   const handleSignOut = async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
     router.push("/login");
     router.refresh();
   };
+
+  const newCandidatesCount = candidates.filter((c) => !c.analyzed_at).length;
 
   const sorted = [...candidates].sort((a, b) => {
     if (sortBy === "ranking") {
@@ -285,10 +411,27 @@ export default function DashboardPage() {
                 </span>
                 <button
                   onClick={handleAnalyzeAll}
-                  disabled={candidates.length === 0 || analyzingAll || !!analyzing}
+                  disabled={candidates.length === 0 || analyzingAll || analyzingNew || !!analyzing}
                   className="px-4 py-2 text-sm font-medium rounded bg-[var(--unibe-red)] text-white hover:bg-[var(--unibe-red-dark)] disabled:opacity-50"
                 >
                   {analyzingAll ? "Analyzing…" : "Analyze all"}
+                </button>
+                <button
+                  onClick={handleAnalyzeNew}
+                  disabled={newCandidatesCount === 0 || analyzingAll || analyzingNew || !!analyzing}
+                  className="px-4 py-2 text-sm font-medium rounded bg-[var(--unibe-red)] text-white hover:bg-[var(--unibe-red-dark)] disabled:opacity-50 inline-flex items-center gap-2"
+                >
+                  {analyzingNew ? "Analyzing…" : "Analyze new"}
+                  <span className="inline-flex items-center justify-center min-w-6 h-6 px-2 rounded-full bg-white/20 text-xs font-semibold">
+                    {newCandidatesCount}
+                  </span>
+                </button>
+                <button
+                  onClick={handleDownloadXlsx}
+                  disabled={candidates.length === 0 || downloading}
+                  className="px-4 py-2 text-sm font-medium rounded bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+                >
+                  {downloading ? "Downloading…" : "Download .xlsx"}
                 </button>
               </div>
               <div className="flex gap-2">
@@ -315,17 +458,27 @@ export default function DashboardPage() {
                     <th className="text-left py-3 px-4 font-medium text-gray-700">Current position</th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700">Ranking AI</th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700">Ranking Recruiter</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-700">Details</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700 min-w-[320px]">Details</th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700">PDF</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-700">Email</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700 max-w-[180px]">Email</th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700">Analyze</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-700">Reject email</th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700">Archiv / Löschen</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sorted.map((c) => (
                     <tr key={c.pdf_path} className="border-b border-gray-100 hover:bg-gray-50">
-                      <td className="py-3 px-4 font-medium">{c.name || "—"}</td>
+                      <td className="py-3 px-4 font-medium">
+                        <div className="flex items-center gap-2">
+                          <span>{c.name || "—"}</span>
+                          {c.rejected && (
+                            <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-red-100 text-red-700">
+                              Rejected
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="py-3 px-4 text-gray-600">{c.current_position || "—"}</td>
                       <td className="py-3 px-4">
                         {c.ranking_score != null ? (
@@ -361,7 +514,7 @@ export default function DashboardPage() {
                           <option value="C">C</option>
                         </select>
                       </td>
-                      <td className="py-3 px-4 max-w-xs">
+                      <td className="py-3 px-4 min-w-[320px] max-w-[400px]">
                         {c.strengths || c.weaknesses ? (
                           <div className="space-y-1 text-xs">
                             {c.strengths && (
@@ -389,7 +542,7 @@ export default function DashboardPage() {
                           View PDF
                         </button>
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 max-w-[180px]">
                         {c.email ? (
                           <a
                             href={`mailto:${c.email}`}
@@ -408,6 +561,15 @@ export default function DashboardPage() {
                           className="px-3 py-1 text-xs font-medium rounded bg-[var(--unibe-red)] text-white hover:bg-[var(--unibe-red-dark)] disabled:opacity-50"
                         >
                           {analyzing === c.pdf_path ? "Analyzing…" : c.ranking_score != null ? "Re-analyze" : "Analyze"}
+                        </button>
+                      </td>
+                      <td className="py-3 px-4">
+                        <button
+                          onClick={() => handleRejectEmail(c)}
+                          disabled={!c.email || !!rejecting}
+                          className="px-3 py-1 text-xs font-medium rounded bg-[var(--unibe-red)] text-white hover:bg-[var(--unibe-red-dark)] disabled:opacity-50"
+                        >
+                          {rejecting === c.pdf_path ? "Opening…" : "Reject email"}
                         </button>
                       </td>
                       <td className="py-3 px-4">
