@@ -4,6 +4,28 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import OpenAI from "openai";
 import pdf from "pdf-parse";
 
+type AIProvider = "openai" | "infomaniak";
+
+function normalizeProvider(rawProvider: string | undefined): AIProvider | null {
+  if (!rawProvider) return "openai";
+  const cleaned = rawProvider.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  if (cleaned === "openai" || cleaned === "infomaniak") return cleaned;
+  return null;
+}
+
+function normalizeModel(rawModel: string | undefined, fallback: string): string {
+  if (!rawModel) return fallback;
+  const cleaned = rawModel.trim().replace(/^['"]|['"]$/g, "");
+  return cleaned || fallback;
+}
+
+function normalizeInfomaniakModel(rawModel: string | undefined): string {
+  const cleaned = normalizeModel(rawModel, "qwen3").toLowerCase();
+  // Keep backward compatibility with older config values.
+  if (cleaned === "qwen3-vl" || cleaned === "qwen3_vl") return "qwen3";
+  return cleaned;
+}
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const {
@@ -19,13 +41,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "pdf_path required" }, { status: 400 });
   }
 
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) {
+  const provider = normalizeProvider(process.env.AI_PROVIDER);
+  if (!provider) {
     return NextResponse.json(
-      { error: "OPENAI_API_KEY not configured" },
+      { error: "AI_PROVIDER must be either 'openai' or 'infomaniak'" },
       { status: 500 }
     );
   }
+  const isInfomaniak = provider === "infomaniak";
+  const isOpenAI = provider === "openai";
+
+  const apiKey = isInfomaniak
+    ? process.env.INFOMANIAK_API_KEY
+    : process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      {
+        error: isInfomaniak
+          ? "INFOMANIAK_API_KEY not configured"
+          : "OPENAI_API_KEY not configured",
+      },
+      { status: 500 }
+    );
+  }
+
+  const infomaniakProductId = process.env.INFOMANIAK_PRODUCT_ID;
+  if (isInfomaniak && !infomaniakProductId) {
+    return NextResponse.json(
+      { error: "INFOMANIAK_PRODUCT_ID not configured" },
+      { status: 500 }
+    );
+  }
+
+  const model = isInfomaniak
+    ? normalizeInfomaniakModel(process.env.INFOMANIAK_MODEL)
+    : normalizeModel(process.env.OPENAI_MODEL, "gpt-5.2");
 
   const admin = createAdminClient();
   const { data: fileData, error: downloadError } = await admin.storage
@@ -58,7 +108,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const openai = new OpenAI({ apiKey: openaiKey });
+  const openai = new OpenAI(
+    isInfomaniak
+      ? {
+          apiKey,
+          baseURL: `https://api.infomaniak.com/2/ai/${infomaniakProductId}/openai/v1`,
+        }
+      : { apiKey }
+  );
 
   const { data: settingsRow } = await supabase
     .from("recruitment_settings")
@@ -87,15 +144,46 @@ Application text:
 ${text.slice(0, 12000)}
 ---`;
 
+  const responseFormat = isInfomaniak
+    ? {
+        type: "json_schema" as const,
+        json_schema: {
+          name: "cv_analysis",
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              first_name: { type: "string" },
+              last_name: { type: "string" },
+              email: { anyOf: [{ type: "string" }, { type: "null" }] },
+              current_position: { type: "string" },
+              ranking_score: { type: "number" },
+              strengths: { type: "string" },
+              weaknesses: { type: "string" },
+            },
+            required: [
+              "first_name",
+              "last_name",
+              "email",
+              "current_position",
+              "ranking_score",
+              "strengths",
+              "weaknesses",
+            ],
+          },
+        },
+      }
+    : ({ type: "json_object" as const });
+
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-5.2",
+      model,
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
+      response_format: responseFormat,
     });
 
     const content = completion.choices[0]?.message?.content;
-    if (!content) throw new Error("No response from OpenAI");
+    if (!content) throw new Error(`No response from ${provider}`);
 
     const analysis = JSON.parse(content) as {
       first_name?: string;

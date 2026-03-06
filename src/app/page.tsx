@@ -21,6 +21,12 @@ type Candidate = {
 };
 
 export default function DashboardPage() {
+  const [activeProvider, setActiveProvider] = useState<"openai" | "infomaniak">("openai");
+  const instructionsTitle =
+    activeProvider === "infomaniak"
+      ? "Infomaniak-Anweisungen für die Analyse"
+      : "OpenAI-Anweisungen für die Analyse";
+
   const [mounted, setMounted] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,7 +37,7 @@ export default function DashboardPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<"ranking" | "name">("ranking");
+  const [sortBy, setSortBy] = useState<"ai_ranking" | "recruiter_ranking">("ai_ranking");
   const [instructions, setInstructions] = useState("");
   const [instructionsDirty, setInstructionsDirty] = useState(false);
   const [savingInstructions, setSavingInstructions] = useState(false);
@@ -75,9 +81,24 @@ export default function DashboardPage() {
     }
   };
 
+  const fetchProvider = async () => {
+    try {
+      const res = await fetch("/api/provider");
+      if (res.ok) {
+        const data = (await res.json()) as { provider?: string };
+        if (data.provider === "infomaniak" || data.provider === "openai") {
+          setActiveProvider(data.provider);
+        }
+      }
+    } catch {
+      // keep default
+    }
+  };
+
   useEffect(() => {
     fetchCandidates();
     fetchSettings();
+    fetchProvider();
   }, []);
 
   const handleSaveInstructions = async () => {
@@ -338,10 +359,23 @@ export default function DashboardPage() {
 
   const newCandidatesCount = candidates.filter((c) => !c.analyzed_at).length;
 
+  const recruiterRankValue = (rank: string | null | undefined) => {
+    if (rank === "A") return 3;
+    if (rank === "B") return 2;
+    if (rank === "C") return 1;
+    return 0;
+  };
+
   const sorted = [...candidates].sort((a, b) => {
-    if (sortBy === "ranking") {
-      return (b.ranking_score ?? 0) - (a.ranking_score ?? 0);
+    if (sortBy === "ai_ranking") {
+      const aiDiff = (b.ranking_score ?? 0) - (a.ranking_score ?? 0);
+      if (aiDiff !== 0) return aiDiff;
+      return (a.name || "").localeCompare(b.name || "");
     }
+
+    const recruiterDiff =
+      recruiterRankValue(b.recruiter_ranking) - recruiterRankValue(a.recruiter_ranking);
+    if (recruiterDiff !== 0) return recruiterDiff;
     return (a.name || "").localeCompare(b.name || "");
   });
 
@@ -377,7 +411,7 @@ export default function DashboardPage() {
 
         <section className="mb-8 p-4 bg-white rounded-lg shadow border border-gray-200">
           <h2 className="text-sm font-semibold text-gray-700 mb-2">
-            ChatGPT-Anweisungen für die Analyse
+            {instructionsTitle}
           </h2>
           <textarea
             value={instructions}
@@ -436,16 +470,16 @@ export default function DashboardPage() {
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={() => setSortBy("ranking")}
-                  className={`px-3 py-1 text-sm rounded ${sortBy === "ranking" ? "bg-[var(--unibe-red)] text-white" : "bg-gray-200 text-gray-700"}`}
+                  onClick={() => setSortBy("ai_ranking")}
+                  className={`px-3 py-1 text-sm rounded ${sortBy === "ai_ranking" ? "bg-[var(--unibe-red)] text-white" : "bg-gray-200 text-gray-700"}`}
                 >
-                  Sort by ranking
+                  Sort by AI ranking
                 </button>
                 <button
-                  onClick={() => setSortBy("name")}
-                  className={`px-3 py-1 text-sm rounded ${sortBy === "name" ? "bg-[var(--unibe-red)] text-white" : "bg-gray-200 text-gray-700"}`}
+                  onClick={() => setSortBy("recruiter_ranking")}
+                  className={`px-3 py-1 text-sm rounded ${sortBy === "recruiter_ranking" ? "bg-[var(--unibe-red)] text-white" : "bg-gray-200 text-gray-700"}`}
                 >
-                  Sort by name
+                  Sort by recruiter ranking
                 </button>
               </div>
             </div>

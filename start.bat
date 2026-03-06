@@ -1,8 +1,14 @@
 @echo off
 cd /d "%~dp0"
-echo Starting Recruitment Admin (Port 3001)...
-echo Projekt: %cd%
-start "" cmd /k "cd /d %~dp0 && echo Recruitment Admin - %cd% && npm run dev"
-echo Waiting for server to start...
-timeout /t 5 /nobreak >nul
-start http://localhost:3001
+echo Recruitment Admin launcher
+echo Project: %cd%
+echo.
+echo [1] OpenAI  (Port 3001)
+echo [2] Infomaniak qwen3 (Port 3002)
+set /p CHOICE=Choose instance (1/2):
+
+if "%CHOICE%"=="2" (
+  call "%~dp0start-infomaniak.bat"
+) else (
+  call "%~dp0start-openai.bat"
+)
